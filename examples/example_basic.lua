@@ -16,7 +16,12 @@ local function TestOneInput(buf)
 end
 
 local args = {
-    only_ascii = 1,
-    print_pcs = 1,
+    "-only_ascii=1",
+    "-print_pcs=1",
 }
-luzer.Fuzz(TestOneInput, nil, args)
+
+for i = 1, #args do
+    arg[#arg + 1] = args[i]
+end
+
+luzer.Fuzz(TestOneInput, nil, arg)

@@ -10,6 +10,11 @@ local function TestOneInput(buf)
 end
 
 local opts = {
-    max_len = 4096,
+    "-max_len=4096",
 }
-luzer.Fuzz(TestOneInput, nil, opts)
+
+for i = 1, #opts do
+  arg[#arg + 1] = opts[i]
+end
+
+luzer.Fuzz(TestOneInput, nil, arg)

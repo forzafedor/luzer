@@ -32,7 +32,7 @@ local function TestOneInput(buf)
     parser.parse(decoder.decode(buf))
 end
 
-luzer.Fuzz(TestOneInput, nil, {})
+luzer.Fuzz(TestOneInput, nil, arg)
 ```
 
 Execute test with PUC Rio Lua:
@@ -86,10 +86,15 @@ local function TestOneInput(buf)
 end
 
 local args = {
-    max_total_time = 60,
-    print_final_stats = 1,
+    "-max_total_time=60",
+    "-print_final_stats=1",
 }
-luzer.Fuzz(TestOneInput, nil, args)
+
+for i = 1, #args do
+    arg[#arg + 1] = args[i]
+end
+
+luzer.Fuzz(TestOneInput, nil, arg)
 ```
 
 Run fuzzing target with instrumented Lua runtime.

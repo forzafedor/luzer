@@ -337,37 +337,29 @@ luaL_fuzz(lua_State *L)
 	char **argv = malloc(1 * sizeof(char*));
 	if (!argv)
 		luaL_error(L, "not enough memory");
-	const char *corpus_path = NULL;
 	while (lua_next(L, -2) != 0) {
-		char **argvp = realloc(argv, sizeof(char*) * (argc + 1));
-		if (argvp == NULL) {
-			free(argv);
-			luaL_error(L, "not enough memory");
-		}
-		const char *key = lua_tostring(L, -2);
-		const char *value = lua_tostring(L, -1);
-		if (strcmp(key, "corpus") != 0) {
-			size_t arg_len = strlen(key) + strlen(value) + 3;
-			char *arg = calloc(arg_len, sizeof(char));
-			if (!arg)
-				luaL_error(L, "not enough memory");
-			snprintf(arg, arg_len, "-%s=%s", key, value);
-			argvp[argc] = arg;
-			argc++;
-		} else {
-			corpus_path = strdup(value);
+		lua_Integer num = 0;
+		if (lua_numbertointeger(lua_tonumber(L, -2), &num) && num >= 0) {
+			if (num >= argc) {
+				argc = num + 1;
+				char **argvp = realloc(argv, sizeof(char*) * argc);
+				if (argvp == NULL) {
+					free(argv);
+					luaL_error(L, "not enough memory");
+				}
+				argv = argvp;
+			}
+			char *value = (char*)lua_tostring(L, -1);
+			argv[num] = value;
 		}
 		lua_pop(L, 1);
-		argv = argvp;
-	}
-	if (corpus_path) {
-		argv[argc] = (char*)corpus_path;
-		argc++;
 	}
 	if (argc == 0) {
 		argv[argc] = "";
 		argc++;
 	}
+	char **argvp = realloc(argv, sizeof(char*) * (argc + 1));
+	argv = argvp;
 	argv[argc] = NULL;
 	lua_pop(L, 1);
 

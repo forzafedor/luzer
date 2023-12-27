@@ -31,6 +31,10 @@
 #define CUSTOM_MUTATOR_LIB "libcustom_mutator.so.1"
 #define DEBUG_HOOK_FUNC "luzer_custom_hook"
 
+#define ENV_NOT_USE_CLI_ARGS "LUZER_NOT_USE_CLI_ARGS_FOR_LF"
+
+#define LUA_CORPUS_FLAG "-corpus"
+
 static lua_State *LL;
 
 static void
@@ -324,55 +328,178 @@ load_custom_mutator_lib(void) {
 	return 0;
 }
 
-NO_SANITIZE static int
-luaL_fuzz(lua_State *L)
-{
-	if (lua_istable(L, -1) == 0) {
-		luaL_error(L, "opts is not a table");
+/* Structure for convenient argument parsing. */
+struct args {
+	char **argv;
+	int argc;
+};
+
+NO_SANITIZE static bool
+is_flag_in_args(struct args *f_args, const char *key) {
+	if (!f_args || !f_args->argv || f_args->argc <= 0)
+		return false;
+	char search_flag[strlen(key) + 3];
+	snprintf(search_flag, strlen(key) + 3, "-%s=", key);
+	for (int i = 0; i <= f_args->argc; i++) {
+		if (strncmp(f_args->argv[i], search_flag, strlen(search_flag)) == 0)
+			return true;
 	}
+	return false;
+}
+
+NO_SANITIZE static int
+get_args_from_cli(lua_State *L, struct args *cli_args) {
+	if (lua_getglobal(L, "arg") != LUA_TTABLE)
+                return -1;
+
+	cli_args->argv = malloc(1 * sizeof(char*));
+	if (!cli_args->argv)
+		luaL_error(L, "not enough memory");
+
+	lua_pushnil(L);
+
+        char* not_use_cli_args = getenv(ENV_NOT_USE_CLI_ARGS);
+	cli_args->argc = 0;
+	while (lua_next(L, -2) != 0) {
+		const char *value = lua_tostring(L, -1);
+		const int key = lua_tointeger(L, -2);
+		lua_pop(L, 1);
+                if (key < 0)
+                        continue;
+
+                const char *arg = strdup(value);
+                if (!arg) {
+                        free(cli_args->argv);
+                        luaL_error(L, "not enough memory");
+                }
+
+                if (key > 0 && (not_use_cli_args == NULL || !strcmp(not_use_cli_args, "0"))) {
+			cli_args->argc++;
+                        char **argvp = realloc(cli_args->argv, sizeof(char*) * (cli_args->argc + 1));
+                        if (argvp == NULL) {
+                                free(cli_args->argv);
+                                luaL_error(L, "not enough memory");
+                        }
+                        cli_args->argv = argvp;
+                        cli_args->argv[cli_args->argc] = (char*)arg;
+                } else {
+                        cli_args->argv[0] = (char*)arg;
+                }
+	}
+	lua_pop(L, 1);
+	return 0;
+}
+
+NO_SANITIZE static int
+get_args_from_lua(lua_State *L, struct args *lua_args, struct args *cli_args) {
+        if (lua_istable(L, -1) == 0)
+		luaL_error(L, "opts is not a table");
+
 	lua_pushnil(L);
 
 	/* Processing a table with options. */
-	int argc = 0;
-	char **argv = malloc(1 * sizeof(char*));
-	if (!argv)
-		luaL_error(L, "not enough memory");
-	const char *corpus_path = NULL;
-	while (lua_next(L, -2) != 0) {
-		char **argvp = realloc(argv, sizeof(char*) * (argc + 1));
-		if (argvp == NULL) {
-			free(argv);
-			luaL_error(L, "not enough memory");
-		}
+	lua_args->argc = 0;
+        while (lua_next(L, -2) != 0) {
 		const char *key = lua_tostring(L, -2);
 		const char *value = lua_tostring(L, -1);
-		if (strcmp(key, "corpus") != 0) {
-			size_t arg_len = strlen(key) + strlen(value) + 3;
-			char *arg = calloc(arg_len, sizeof(char));
-			if (!arg)
-				luaL_error(L, "not enough memory");
-			snprintf(arg, arg_len, "-%s=%s", key, value);
-			argvp[argc] = arg;
-			argc++;
-		} else {
-			corpus_path = strdup(value);
-		}
 		lua_pop(L, 1);
-		argv = argvp;
+		if (is_flag_in_args(cli_args, key))
+			continue;
+
+		if (lua_args->argc > 0) {
+			char **argvp = realloc(lua_args->argv, sizeof(char*) * (lua_args->argc + 1));
+			if (argvp == NULL) {
+				free(lua_args->argv);
+				luaL_error(L, "not enough memory");
+			}
+			lua_args->argv = argvp;
+		} else {
+			lua_args->argv = malloc(1 * sizeof(char*));
+			if (!lua_args->argv)
+				luaL_error(L, "not enough memory");
+		}
+		size_t arg_len = strlen(key) + strlen(value) + 3;
+		char *arg = calloc(arg_len, sizeof(char));
+		if (!arg){
+			free(lua_args->argv);
+			luaL_error(L, "not enough memory");
+		}
+		snprintf(arg, arg_len, "-%s=%s", key, value);
+		lua_args->argv[lua_args->argc] = arg;
+		lua_args->argc++;
+	}
+
+	lua_pop(L, 1);
+	return 0;
+}
+
+NO_SANITIZE static int
+merge_args(struct args *cli_args, struct args *lua_args, struct args *total_args) {
+	total_args->argc = (cli_args->argc + lua_args->argc + 1);
+	total_args->argv = malloc(sizeof(char*) * (total_args->argc + 1));
+	if (!cli_args->argv)
+		return -1;
+	/* Program name on zero index. */
+	total_args->argv[0] = cli_args->argv[0];
+
+	int cur_pos_arg = 1;
+	char *corpus_path = NULL;
+	for (int i = 0; i < lua_args->argc; i++) {
+		if (strncmp(lua_args->argv[i], LUA_CORPUS_FLAG, strlen(LUA_CORPUS_FLAG)) == 0) {
+			int corpus_path_len = strlen(lua_args->argv[i]) - strlen(LUA_CORPUS_FLAG);
+			corpus_path = malloc(corpus_path_len * sizeof(char*));
+                        if (!corpus_path)
+                                return -1;
+			memcpy(corpus_path, &lua_args->argv[i][strlen(LUA_CORPUS_FLAG) + 1], corpus_path_len);
+			free(lua_args->argv[i]);
+		} else {
+			total_args->argv[cur_pos_arg] = lua_args->argv[i];
+			cur_pos_arg++;
+		}
+	}
+	for (int i = 1; i <= cli_args->argc; i++) {
+		total_args->argv[cur_pos_arg] = cli_args->argv[i];
+		cur_pos_arg++;
 	}
 	if (corpus_path) {
-		argv[argc] = (char*)corpus_path;
-		argc++;
+		total_args->argv[cur_pos_arg] = corpus_path;
+		cur_pos_arg++;
 	}
-	if (argc == 0) {
-		argv[argc] = "";
-		argc++;
-	}
-	argv[argc] = NULL;
-	lua_pop(L, 1);
+	total_args->argv[total_args->argc] = NULL;
+
+        if (lua_args->argv)
+	        free(lua_args->argv);
+
+        if (cli_args->argv)
+	        free(cli_args->argv);
+
+	return 0;
+}
+
+
+NO_SANITIZE static int
+luaL_fuzz(lua_State *L)
+{
+        int result = -1;
+	struct args cli_args = { .argv = NULL, .argc = 0 };
+	struct args lua_args = { .argv = NULL, .argc = 0 };
+	struct args total_args = { .argv = NULL, .argc = 0 };
+
+	result = get_args_from_cli(L, &cli_args);
+        if (result < 0)
+                luaL_error(L, "failed to parse arguments from console");
+
+	/* If flag in cli and lua is duplicated, then flag from lua is ignored. */
+	result = get_args_from_lua(L, &lua_args, &cli_args);
+        if (result < 0)
+                luaL_error(L, "failed to parse arguments from lua");
+
+	result = merge_args(&cli_args, &lua_args, &total_args);
+        if (result < 0)
+                luaL_error(L, "failed to merge arguments");
 
 #ifdef DEBUG
-	char **p = argv;
+	char **p = total_args.argv;
 	while(*p++) {
 		if (*p)
 			DEBUG_PRINT("libFuzzer arg - '%s'\n", *p);
@@ -415,7 +542,7 @@ luaL_fuzz(lua_State *L)
 	lua_pop(L, -1);
 
 	set_global_lua_state(L);
-	int rc = LLVMFuzzerRunDriver(&argc, &argv, &TestOneInput);
+	int rc = LLVMFuzzerRunDriver(&total_args.argc, &total_args.argv, &TestOneInput);
 	luaL_cleanup(L);
 
 	lua_pushnumber(L, rc);
